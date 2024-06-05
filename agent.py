@@ -1,105 +1,202 @@
 import torch
+import torch.nn as nn
+import torch.optim as optim
 import random
 import numpy as np
 from collections import deque
+from model import DQN
 from flappy_bird_game import FlappyBirdGameAI
-from model import Linear_QNet, QTrainer
-from helper import plot
+import os
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
 
-MAX_MEMORY = 100_000
-BATCH_SIZE = 1000
-LR = 0.001
+class DQNAgent:
+    def __init__(self, state_dim, action_dim, gamma=0.98, epsilon=1.0, lr=0.0001, batch_size=512, max_mem_size=50000, target_update_freq=50):
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.gamma = gamma
+        self.epsilon = epsilon
+        self.epsilon_min = 0.01
+        self.epsilon_decay = 0.995
+        self.batch_size = batch_size
+        self.memory = deque(maxlen=max_mem_size)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"device: ########## {self.device} ##########")
+        self.model = DQN(state_dim, action_dim).to(self.device)
+        self.target_model = DQN(state_dim, action_dim).to(self.device)
+        self.update_target_model()  # Initialize target model
+        self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
+        self.loss_fn = nn.MSELoss()
+        self.target_update_freq = target_update_freq
+        self.steps_done = 0
 
-class Agent:
+    def update_target_model(self):
+        self.target_model.load_state_dict(self.model.state_dict())
 
-    def __init__(self):
-        self.n_games = 0
-        self.epsilon = 0  # Start with a high epsilon for exploration
-        self.gamma = 0.9 # discount rate
-        self.memory = deque(maxlen=MAX_MEMORY) # popleft()
-        self.model = Linear_QNet(5, 256, 2)
-        self.trainer = QTrainer(self.model, lr=LR, gamma=self.gamma)
+    def load_model(self, file_path):
+        if os.path.exists(file_path):
+            self.model.load_state_dict(torch.load(file_path))
+            self.update_target_model()
+            print('Successfully loaded model', file_path)
 
-    def get_state(self, game):
-        # the bird's y position, the distance to the next pipe, the distance to the bottom pipe
-        return game.get_state()
-    
+    def save_model(self, file_path):
+        torch.save(self.model.state_dict(), file_path)
 
-    def remember(self, state, action, reward, next_state, done):
-        self.memory.append((state, action, reward, next_state, done)) # popleft if MAX_MEMORY is reached
 
-    def train_long_memory(self):
+    def store_transition(self, state, action, reward, next_state, done):
+        self.memory.append((state, action, reward, next_state, done))
+
+    def act(self, state):
+        if np.random.rand() <= self.epsilon:
+            return random.randrange(self.action_dim)
+        state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+        q_values = self.model(state)
+        return torch.argmax(q_values, dim=1).item()
+
+    def experience_replay(self):
+        if len(self.memory) < self.batch_size:
+            return
+        minibatch = random.sample(self.memory, self.batch_size)
+        states, actions, rewards, next_states, dones = zip(*minibatch)
+
+        states = np.array(states)  # Convert list of numpy arrays to a single numpy array
+        states = torch.FloatTensor(states).to(self.device)  # Convert numpy array to tensor
+        actions = torch.LongTensor(actions).to(self.device)
+        rewards = torch.FloatTensor(rewards).to(self.device)
+        next_states = np.array(next_states)  # Convert list of numpy arrays to a single numpy array
+        next_states = torch.FloatTensor(next_states).to(self.device)  # Convert numpy array to tensor
+        dones = torch.FloatTensor(dones).to(self.device)
+
+        q_values = self.model(states).gather(1, actions.unsqueeze(1)).squeeze(1)
+        next_q_values = self.target_model(next_states).max(1)[0]
+        targets = rewards + (self.gamma * next_q_values * (1 - dones))
+
+        loss = self.loss_fn(q_values, targets)
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
+        if self.epsilon > self.epsilon_min:
+            self.epsilon *= self.epsilon_decay
+
+        self.steps_done += 1
+        if self.steps_done % self.target_update_freq == 0:
+            self.update_target_model()
+
+        return loss.item()
+
+def save_max_score(max_score, filepath='max_score.txt'):
+    with open(filepath, 'w') as f:
+        f.write(str(max_score))
+
+def load_max_score(filepath='max_score.txt'):
+    if os.path.exists(filepath):
+        with open(filepath, 'r') as f:
+            return int(f.read())
+    return 0
+
+def train_dqn_agent(render=False):
+    num_episodes = 1000
+    game = FlappyBirdGameAI(display_screen=render)
+    state_dim = len(game.get_state())
+    action_dim = 2  # Jump or no jump
+    agent = DQNAgent(state_dim, action_dim)
+    #agent.load_model("model.pth")
+
+    scores = []
+    avg_scores = []
+    max_score = 0
+    #load_max_score()
+    tloss = []
+    agent.model.train()  # Set the model to training mode
+    rewards = []
+
+    # fig, ax = plt.subplots()
+    # plt.ion()
+
+    # def animate(i):
+    #     ax.clear()
+    #     ax.plot(rewards)
+    #     ax.set_title('Rewards per Step')
+    #     ax.set_xlabel('Steps')
+    #     ax.set_ylabel('Reward')
+
+    # ani = animation.FuncAnimation(fig, animate, interval=100, cache_frame_data=False)
+
+    for episode in range(num_episodes):
+        state = game.reset()
+        total_reward = 0
+
+        while True:
+            action = agent.act(state)
+            next_state, reward, done, score = game.step(action)
+
+            agent.store_transition(state, action, reward, next_state, done)
+            loss = agent.experience_replay()
+
+            state = next_state
+            total_reward += reward
+            rewards.append(reward)
+
+            # plt.pause(0.1)  # Allow plot to update
+
+            if done:
+                if score > max_score:
+                    max_score = score
+                    save_max_score(max_score)
+                    agent.save_model("model.pth")
+                    print(f"Saved model with score: {max_score}")
+                break
+
+        scores.append(score)
+        avg_score = np.mean(scores[-100:])  # Compute average of last 100 scores
+        avg_scores.append(avg_score)  # Append to list of average scores
+        tloss.append(loss)
+        print(f"Episode: {episode + 1}, Score: {score}, Total Reward: {total_reward}, max_score: {max_score}, loss: {loss}")
+
+    # plt.ioff()
+    # plt.show()
+
         
-        if len(self.memory) > BATCH_SIZE:
-            mini_sample = random.sample(self.memory, BATCH_SIZE) # list of tuples
-        else:
-            mini_sample = self.memory
 
-        states, actions, rewards, next_states, dones = zip(*mini_sample)
-        self.trainer.train_step(states, actions, rewards, next_states, dones)
+    plt.figure(figsize=(15, 10))
+    plt.plot(scores, label='Score')
+    plt.plot(avg_scores, label='Average Score')  # Plot average scores
+    plt.xlabel('Episodes')
+    plt.ylabel('Scores')
+    plt.legend()
 
+    plt.show()
 
-    def train_short_memory(self, state, action, reward, next_state, done):
-        self.trainer.train_step(state, action, reward, next_state, done)
+def evaluate_dqn_agent(render=True):
+    game = FlappyBirdGameAI(display_screen=render)
+    state_dim = len(game.get_state())
+    action_dim = 2  # Jump or no jump
+    agent = DQNAgent(state_dim, action_dim)
+    agent.load_model("model.pth")
 
-    def get_action(self, state):
-        # Decay epsilon after each game
-        self.epsilon = 300 - self.n_games
-        
-        if random.randint(0, 350) < self.epsilon:
-            final_move = 1 if random.randint(0, 50) == 1 else 0
-        else:
-            state0 = torch.tensor(state, dtype=torch.float)
-            prediction = self.model(state0)
-            move = torch.argmax(prediction).item()
-            final_move = move
+    agent.model.eval()  # Set the model to evaluation mode
 
-        return final_move
+    scores = []
+    num_episodes = 100  # Number of episodes for evaluation
 
-def train():
-    
-    plot_scores = []
-    plot_mean_scores = []
-    total_score = 0
-    record = 0
-    agent = Agent()
-    game = FlappyBirdGameAI()
-    loaded = agent.model.load()
-    if loaded:
-        agent.n_games = 280
+    for episode in range(num_episodes):
+        state = game.reset()
+        total_reward = 0
 
-    while True:
-        state_old = agent.get_state(game)
-        final_move = agent.get_action(state_old)
-        reward, done, score = game.play_step(final_move)
-        state_new = agent.get_state(game)
-        agent.train_short_memory(state_old, final_move, reward, state_new, done)
-        agent.remember(state_old, final_move, reward, state_new, done)
-        if done:
-            # train long memory, plot result
-            game.reset()
-            agent.n_games += 1
-            agent.train_long_memory()
-            if score > record:
-                record = score
-                agent.model.save()
-            print('Game', agent.n_games, 'Score', score, 'Record:', record, 'Reward:', reward)
+        while True:
+            action = agent.act(state)
+            next_state, reward, done, score = game.step(action)
 
-            # plot_scores.append(score)
-            # total_score += score
-            # mean_score = total_score / agent.n_games
-            # plot_mean_scores.append(mean_score)
-            # plot(plot_scores, plot_mean_scores)
-            
+            state = next_state
+            total_reward += reward
 
+            if done:
+                scores.append(score)
+                print(f"Episode: {episode + 1}, Score: {score}, Total Reward: {total_reward}")
+                break
 
-
-
-
-
-
-if __name__ == '__main__':
-    train()
-
-
+    avg_score = np.mean(scores)
+    print(f"Average Score over {num_episodes} episodes: {avg_score}")
 
