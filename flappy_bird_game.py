@@ -93,11 +93,15 @@ class FlappyBirdGameAI:
 
     def get_state(self):
         bird_y = self.bird.y
-        bird_velocity = self.bird.velocity
-        distance_to_pipe = self.pipe.x - self.bird.x - self.bird.width
-        distance_to_top_gap = self.pipe.height - self.bird.y
-        distance_to_bottom_gap = (self.pipe.height + self.pipe.gap) - self.bird.y - self.bird.height
-        return [bird_y, bird_velocity, distance_to_pipe, distance_to_top_gap, distance_to_bottom_gap]
+        # bird_velocity = self.bird.velocity
+        # distance_to_pipe = self.pipe.x - self.bird.x - self.bird.width
+        # distance_to_top_gap = self.pipe.height - self.bird.y
+        # distance_to_bottom_gap = (self.pipe.height + self.pipe.gap) - self.bird.y - self.bird.height
+        # return [bird_y, bird_velocity, distance_to_pipe, distance_to_top_gap, distance_to_bottom_gap]
+
+        top_pipe_y = self.pipe.height
+        bottom_pipe_y = self.pipe.height + self.pipe.gap
+        return [bird_y, top_pipe_y, bottom_pipe_y]
 
     def pause(self):
         paused = True
@@ -132,24 +136,27 @@ class FlappyBirdGameAI:
         self.bird.update()
         self.pipe.update()
 
-        reward = 5
-        distance_to_pipe_safe_y = abs(self.bird.y - self.pipe.safe_y)
-        reward -= distance_to_pipe_safe_y / 600 * 10
+        
+        # distance_to_pipe_safe_y = abs(self.bird.y - self.pipe.safe_y)
+        # reward -= distance_to_pipe_safe_y / 600 * 10
 
         if self.pipe.off_screen():
             self.pipe.reset()
 
         if self.bird_just_passed_pipe():
             self.score += 1
-            reward += 120
+            # reward += 120
 
         if self.check_pipe_collision():
-            reward -= 15
+            # reward -= 15
             self.game_over = True
 
+        reward = 0
         if self.check_floor_or_ceiling_collision():
-            reward -= 30
+            # reward -= 30
             self.game_over = True
+        else :
+            reward = 1
 
         if self.display_screen:
             self.screen.fill((255, 255, 255))
